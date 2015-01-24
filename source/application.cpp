@@ -214,7 +214,6 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 	Hotkey *hk;
 	USHORT variant_id;
 	HotkeyVariant *variant;
-	ActionTypeType type_of_first_line;
 	int priority;
 	Hotstring *hs;
 	GuiType *pgui; // This is just a temp variable and should not be referred to once the below has been determined.
@@ -224,7 +223,6 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 	DWORD_PTR gui_event_info;
 	DWORD gui_size;
 	bool *pgui_label_is_running, event_is_control_generated;
-	Label *gui_label;
 	HDROP hdrop_to_free;
 	DWORD tick_before, tick_after;
 	LRESULT msg_reply;
@@ -654,6 +652,8 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 		case WM_HOTKEY:        // As a result of this app having previously called RegisterHotkey(), or from TriggerJoyHotkeys().
 		case AHK_USER_MENU:    // The user selected a custom menu item.
 		{
+			LabelPtr label_to_call;
+
 			hdrop_to_free = NULL;  // Set default for this message's processing (simplifies code).
 			switch(msg.message)
 			{
@@ -689,22 +689,22 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				switch(gui_action)
 				{
 				case GUI_EVENT_RESIZE: // This is the signal to run the window's OnEscape label. Listed first for performance.
-					if (   !(gui_label = pgui->mLabelForSize)   ) // In case it became NULL since the msg was posted.
+					if (   !(label_to_call = pgui->mLabelForSize)   ) // In case it became NULL since the msg was posted.
 						continue;
 					pgui_label_is_running = &pgui->mLabelForSizeIsRunning;
 					break;
 				case GUI_EVENT_CLOSE:  // This is the signal to run the window's OnClose label.
-					if (   !(gui_label = pgui->mLabelForClose)   ) // In case it became NULL since the msg was posted.
+					if (   !(label_to_call = pgui->mLabelForClose)   ) // In case it became NULL since the msg was posted.
 						continue;
 					pgui_label_is_running = &pgui->mLabelForCloseIsRunning;
 					break;
 				case GUI_EVENT_ESCAPE: // This is the signal to run the window's OnEscape label.
-					if (   !(gui_label = pgui->mLabelForEscape)   ) // In case it became NULL since the msg was posted.
+					if (   !(label_to_call = pgui->mLabelForEscape)   ) // In case it became NULL since the msg was posted.
 						continue;
 					pgui_label_is_running = &pgui->mLabelForEscapeIsRunning;
 					break;
 				case GUI_EVENT_CONTEXTMENU:
-					if (   !(gui_label = pgui->mLabelForContextMenu)   ) // In case it became NULL since the msg was posted.
+					if (   !(label_to_call = pgui->mLabelForContextMenu)   ) // In case it became NULL since the msg was posted.
 						continue;
 					// UPDATE: Must allow multiple threads because otherwise the user cannot right-click twice
 					// consecutively (the second click is blocked because the menu is still displayed at the
@@ -717,7 +717,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 					break;
 				case GUI_EVENT_DROPFILES: // This is the signal to run the window's DropFiles label.
 					hdrop_to_free = pgui->mHdrop; // This variable simplifies the code further below.
-					if (   !(gui_label = pgui->mLabelForDropFiles) // In case it became NULL since the msg was posted.
+					if (   !(label_to_call = pgui->mLabelForDropFiles) // In case it became NULL since the msg was posted.
 						|| !hdrop_to_free // Checked just in case, so that the below can query it.
 						|| !(gui_event_info = DragQueryFile(hdrop_to_free, 0xFFFFFFFF, NULL, 0))   ) // Probably impossible, but if it ever can happen, seems best to ignore it.
 					{
@@ -736,7 +736,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				default: // This is an action from a particular control in the GUI window.
 					if (!pcontrol) // gui_control_index was beyond the quantity of controls, possibly due to parent window having been destroyed since the msg was sent (or bogus msg).
 						continue;  // Discarding an invalid message here is relied upon both other sections below.
-					if (   !(gui_label = pcontrol->jump_to_label)   )
+					if (   !(label_to_call = pcontrol->jump_to_label)   )
 					{
 						// On if there's no label is the implicit action considered.
 						if (pcontrol->attrib & GUI_CONTROL_ATTRIB_IMPLICIT_CANCEL)
@@ -756,7 +756,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 					event_is_control_generated = true; // As opposed to a drag-and-drop or context-menu event that targets a specific control.
 					// And leave pgui_label_is_running at its default of NULL because it doesn't apply to these.
 				} // switch(gui_action)
-				type_of_first_line = gui_label->mJumpToLine->mActionType; // Above would already have discarded this message if it there was no label.
+				// label_to_call has been set; above would already have discarded this message if it there was no label.
 				break; // case AHK_GUI_ACTION
 
 			case AHK_USER_MENU: // user-defined menu item
@@ -767,7 +767,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				// the menu):
 				if (!menu_item->mLabel)
 					continue;
-				type_of_first_line = menu_item->mLabel->mJumpToLine->mActionType;
+				label_to_call = menu_item->mLabel;
 				break;
 
 			case AHK_HOTSTRING:
@@ -802,12 +802,12 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				// Since this isn't an auto-replace hotstring, set this value to support
 				// the built-in variable A_EndChar:
 				g_script.mEndChar = hs->mEndCharRequired ? (char)LOWORD(msg.lParam) : 0; // v1.0.48.04: Explicitly set 0 when hs->mEndCharRequired==false because LOWORD is used for something else in that case.
-				type_of_first_line = hs->mJumpToLabel->mJumpToLine->mActionType;
+				label_to_call = hs->mJumpToLabel;
 				break;
 
 			case AHK_CLIPBOARD_CHANGE: // Due to the presence of an OnClipboardChange label in the script.
 				// Caller has ensured that mOnClipboardChangeLabel is a non-NULL, valid pointer.
-				type_of_first_line = g_script.mOnClipboardChangeLabel->mJumpToLine->mActionType;
+				label_to_call = g_script.mOnClipboardChangeLabel;
 				break;
 
 			default: // hotkey
@@ -882,8 +882,12 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				else if (variant->mHotCriterion == HOT_IF_EXPR) // Variants of this type may 
 					criterion_found_hwnd = g_HotExprLFW; // For #if WinExist(WinTitle) and similar.
 
-				type_of_first_line = variant->mJumpToLabel->mJumpToLine->mActionType;
+				label_to_call = variant->mJumpToLabel;
 			} // switch(msg.message)
+
+			// label_to_call has been set to the label, function or object which is
+			// about to be called, though it might not be called via label_to_call.
+			ActionTypeType type_of_first_line = label_to_call->TypeOfFirstLine();
 
 			if (g_nThreads >= g_MaxThreadsTotal)
 			{
@@ -1230,12 +1234,8 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				else if (event_is_control_generated) // An earlier stage has ensured pcontrol isn't NULL in this case.
 					pcontrol->attrib |= GUI_CONTROL_ATTRIB_LABEL_IS_RUNNING; // Must be careful to set this flag only when the event is control-generated, not for a drag-and-drop onto the control, or context menu on the control, etc.
 
-				DEBUGGER_STACK_PUSH(_T("Gui"))
-
 				// LAUNCH GUI THREAD:
-				gui_label->Execute();
-
-				DEBUGGER_STACK_POP()
+				label_to_call->ExecuteInNewThread(_T("Gui"));
 
 				// Bug-fix for v1.0.22: If the above ExecUntil() performed a "Gui Destroy", the
 				// pointers below are now invalid so should not be dereferenced.  In such a case,
@@ -1279,9 +1279,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 					pgui->AddRef(); //
 					g.GuiWindow = g.GuiDefaultWindow = pgui; // But leave GuiControl at its default, which flags this event as from a menu item.
 				}
-				DEBUGGER_STACK_PUSH(_T("Menu"))
-				menu_item->mLabel->Execute();
-				DEBUGGER_STACK_POP()
+				label_to_call->ExecuteInNewThread(_T("Menu"));
 				if (pgui)
 				{
 					pgui->Release(); // g.GuiWindow
@@ -1301,9 +1299,7 @@ bool MsgSleep(int aSleepDuration, MessageMode aMode)
 				// ACT_IS_ALWAYS_ALLOWED() was already checked above.
 				// The message poster has ensured that g_script.mOnClipboardChangeLabel is non-NULL and valid.
 				g_script.mOnClipboardChangeIsRunning = true;
-				DEBUGGER_STACK_PUSH(_T("OnClipboardChange"))
-				g_script.mOnClipboardChangeLabel->Execute();
-				DEBUGGER_STACK_POP()
+				label_to_call->ExecuteInNewThread(_T("OnClipboardChange"));
 				g_script.mOnClipboardChangeIsRunning = false;
 				break;
 
@@ -1663,7 +1659,7 @@ bool CheckScriptTimers()
 		// Pass false as 3rd param below because ++g_nThreads should be done only once rather than
 		// for each Init(), and also it's not necessary to call update the tray icon since timers
 		// won't run if there is any paused thread, thus the icon can't currently be showing "paused".
-		InitNewThread(timer.mPriority, false, false, timer.mLabel->mJumpToLine->mActionType);
+		InitNewThread(timer.mPriority, false, false, timer.mLabel->TypeOfFirstLine());
 
 		// The above also resets g_script.mLinesExecutedThisCycle to zero, which should slightly
 		// increase the expectation that any short timed subroutine will run all the way through
@@ -1676,9 +1672,7 @@ bool CheckScriptTimers()
 		// launches new threads.
 
 		++timer.mExistingThreads;
-		DEBUGGER_STACK_PUSH(_T("Timer"))
-		timer.mLabel->Execute();
-		DEBUGGER_STACK_POP()
+		timer.mLabel->ExecuteInNewThread(_T("Timer"));
 		--timer.mExistingThreads;
 	} // for() each timer.
 
@@ -1779,7 +1773,9 @@ bool MsgMonitor(HWND aWnd, UINT aMsg, WPARAM awParam, LPARAM alParam, MSG *apMsg
 	// Otherwise, the script is monitoring this message, so continue on.
 
 	MsgMonitorStruct &monitor = g_MsgMonitor[msg_index]; // For performance and convenience.
-	Func &func = *monitor.func;                          // Above, but also in case monitor item gets deleted while the function is running (e.g. by the function itself).
+	IObject *func = monitor.func;                        // Above, but also in case monitor item gets deleted while the function is running (e.g. by the function itself).
+	
+	ActionTypeType type_of_first_line = LabelPtr(func)->TypeOfFirstLine();
 
 	// Many of the things done below are similar to the thread-launch procedure used in MsgSleep(),
 	// so maintain them together and see MsgSleep() for more detailed comments.
@@ -1788,7 +1784,7 @@ bool MsgMonitor(HWND aWnd, UINT aMsg, WPARAM awParam, LPARAM alParam, MSG *apMsg
 		// 1) The omitted action types seem too obscure to grant always-run permission for msg-monitor events.
 		// 2) Reduction in code size.
 		if (g_nThreads >= MAX_THREADS_EMERGENCY // To avoid array overflow, this limit must by obeyed except where otherwise documented.
-			|| func.mJumpToLine->mActionType != ACT_EXITAPP && func.mJumpToLine->mActionType != ACT_RELOAD)
+			|| type_of_first_line != ACT_EXITAPP && type_of_first_line != ACT_RELOAD)
 			return false;
 	if (monitor.instance_count >= monitor.max_instances || g->Priority > 0) // Monitor is already running more than the max number of instances, or existing thread's priority is too high to be interrupted.
 		return false;
@@ -1797,7 +1793,7 @@ bool MsgMonitor(HWND aWnd, UINT aMsg, WPARAM awParam, LPARAM alParam, MSG *apMsg
 	// See MsgSleep() for comments about the following section.
 	TCHAR ErrorLevel_saved[ERRORLEVEL_SAVED_SIZE];
 	tcslcpy(ErrorLevel_saved, g_ErrorLevel->Contents(), _countof(ErrorLevel_saved));
-	InitNewThread(0, false, true, func.mJumpToLine->mActionType);
+	InitNewThread(0, false, true, type_of_first_line);
 	DEBUGGER_STACK_PUSH(_T("OnMessage")) // Push a "thread" onto the debugger's stack.  For simplicity and performance, use the function name vs something like "message 0x123".
 
 	GuiType *pgui = NULL;
@@ -1826,55 +1822,52 @@ bool MsgMonitor(HWND aWnd, UINT aMsg, WPARAM awParam, LPARAM alParam, MSG *apMsg
 		g->EventInfo = apMsg->time;
 	}
 	//else leave them at their init-thread defaults.
-
-	// Set up the array of parameters for Func::Call().  Benchmarks showed very little difference
-	// between this approach and the old approach of assigning directly to the function's parameters:
-	ExprTokenType param_token[4];
-	ExprTokenType *param[4];
-	// Message parameters:
-	param[0] = &param_token[0];
-	param_token[0].symbol = SYM_INTEGER;
-	param_token[0].value_int64 = (__int64)awParam;
-	param[1] = &param_token[1];
-	param_token[1].symbol = SYM_INTEGER;
-	param_token[1].value_int64 = (__int64)alParam;
-	// Message number:
-	param[2] = &param_token[2];
-	param_token[2].symbol = SYM_INTEGER;
-	param_token[2].value_int64 = aMsg;
-	// HWND:
-	param[3] = &param_token[3];
-	param_token[3].symbol = SYM_INTEGER;
-	param_token[3].value_int64 = (__int64)(size_t)aWnd;
-
+	
 	// v1.0.38.04: Below was added to maximize responsiveness to incoming messages.  The reasoning
 	// is similar to why the same thing is done in MsgSleep() prior to its launch of a thread, so see
 	// MsgSleep for more comments:
 	g_script.mLastScriptRest = g_script.mLastPeekTime = GetTickCount();
 	++monitor.instance_count;
 
-	bool block_further_processing;
-	{// Scope for func_call.
-		ExprTokenType result_token;
-		FuncCallData func_call;
-		ResultType result;
+	// Set up the array of parameters for func->Invoke().
+	ExprTokenType param_token[5];
+	param_token[0].symbol = SYM_STRING; param_token[0].marker = _T("Call");
+	param_token[1].symbol = SYM_INTEGER; param_token[1].value_int64 = (__int64)awParam;
+	param_token[2].symbol = SYM_INTEGER; param_token[2].value_int64 = (__int64)alParam;
+	param_token[3].symbol = SYM_INTEGER; param_token[3].value_int64 = aMsg;
+	param_token[4].symbol = SYM_INTEGER; param_token[4].value_int64 = (__int64)(size_t)aWnd;
 
-		if (func.Call(func_call, result, result_token, param, 4))
-		{
-			// Fix for v1.0.47: Must handle return_value BEFORE calling FreeAndRestoreFunctionVars() because return_value
-			// might be the contents of one of the function's local variables (which are about to be free'd).
-			block_further_processing = !TokenIsEmptyString(result_token); // No need to check the following because they're implied for *return_value!=0: result != EARLY_EXIT && result != FAIL;
-			if (block_further_processing)
-				aMsgReply = (LRESULT)TokenToInt64(result_token); // Use 64-bit in case it's an unsigned number greater than 0x7FFFFFFF, in which case this allows it to wrap around to a negative.
-			//else leave aMsgReply uninitialized because we'll be returning false later below, which tells our caller
-			// to ignore aMsgReply.
-			if (result_token.symbol == SYM_OBJECT)
-				result_token.object->Release();
-		}
-		else
-			// Above exited or failed.  result_token may not have been initialized, so treat it as empty:
-			block_further_processing = false;
-	}// func_call destructor causes Var::FreeAndRestoreFunctionVars() to be called here.
+	ExprTokenType *param[_countof(param_token)];
+	for (int i = 0; i < _countof(param); ++i)
+		param[i] = param_token + i;
+
+	bool block_further_processing;
+
+	ExprTokenType this_token;
+	this_token.symbol = SYM_OBJECT;
+	this_token.object = func;
+
+	ExprTokenType result_token;
+	TCHAR result_buf[MAX_NUMBER_SIZE];
+	result_token.marker = _T("");
+	result_token.symbol = SYM_STRING;
+	result_token.mem_to_free = NULL;
+	result_token.buf = result_buf;
+
+	func->Invoke(result_token, this_token, IT_CALL, param, _countof(param));
+	// The result of Invoke is ignored; whatever it was, this thread is finished.
+	// Exit has the same result as returning "" due to initialization above.
+
+	block_further_processing = !TokenIsEmptyString(result_token);
+	if (block_further_processing)
+		aMsgReply = (LRESULT)TokenToInt64(result_token); // Use 64-bit in case it's an unsigned number greater than 0x7FFFFFFF, in which case this allows it to wrap around to a negative.
+	//else leave aMsgReply uninitialized because we'll be returning false later below, which tells our caller
+	// to ignore aMsgReply.
+
+	if (result_token.mem_to_free)
+		free(result_token.mem_to_free);
+	if (result_token.symbol == SYM_OBJECT)
+		result_token.object->Release();
 	
 	DEBUGGER_STACK_POP()
 
